@@ -9,6 +9,13 @@ ingredient quantities, shopping lists, a prep sheet, quote totals, deposit and b
 > data, based on the requirements of a real catering-operations job posting.
 > It is **not** a paid client project. Feel free to reuse the code and the design.
 
+## Demo video
+
+[Watch the walkthrough (1:44, YouTube — unlisted)](https://youtu.be/KhbDTMjKopY)
+— a new booking (80 guests) is entered on the live app, two menu lines are added,
+and the quote, deposit, prep quantities and shopping list are calculated
+automatically. Every number shown was checked against hand calculations.
+
 ## What works today (Phase 1, verified end-to-end)
 
 - 10 forms: `Settings`, `Menu_Items`, `Ingredients`, `Customers`, `Recipes`,

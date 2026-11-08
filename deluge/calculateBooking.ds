@@ -1,0 +1,128 @@
+// ============================================================
+// calculateBooking.ds
+// Zoho Creator - Catering Operations Sample (self-built demo)
+//
+// Purpose:
+//   From a confirmed booking (guest count + selected menu),
+//   calculate per-item quantities, ingredient requirements,
+//   prices, deposit and balance. Writes results into
+//   Booking_Calculations, Shopping_List_Items and Prep_Sheet_Items.
+//
+// Notes:
+//   - Form/field names match 設計書.md (data model).
+//   - Buffer rate, tax rate, deposit rate come from Settings.
+//   - This is sample code for a personal demo app, written to be
+//     published on GitHub as-is.
+// ============================================================
+
+string calculateBooking(bigint bookingId)
+{
+	booking = Bookings[ID == bookingId];
+	if(booking == null)
+	{
+		return "Booking not found: " + bookingId;
+	}
+	settingsRec = null;
+	for each s in Settings[ID != 0]
+	{
+		settingsRec = s;
+		break;
+	}
+	bufferRate = 0.10;
+	taxRate = 0.0;
+	depositRate = 0.50;
+	serviceRate = 0.0;
+	if(settingsRec != null)
+	{
+		bufferRate = ifnull(settingsRec.Buffer_Rate_Percent,10.0) / 100.0;
+		taxRate = ifnull(settingsRec.Tax_Rate_Percent,0.0) / 100.0;
+		depositRate = ifnull(settingsRec.Deposit_Rate_Percent,50.0) / 100.0;
+		serviceRate = ifnull(settingsRec.Service_Fee_Rate_Percent,0.0) / 100.0;
+	}
+	guests = booking.Guest_Count;
+	if(guests == null || guests <= 0)
+	{
+		return "Guest count is not set for booking " + bookingId;
+	}
+	// Clear previous calculation results (re-calculation support).
+	// Bulk delete by criteria: deleting row-by-row inside a for-each over the
+	// same collection fails at runtime ("invalid expressions delete statement
+	// is terminated") when more than one row matches.
+	delete from Booking_Calculations[Booking == bookingId];
+	delete from Shopping_List_Items[Booking == bookingId];
+	delete from Prep_Sheet_Items[Booking == bookingId];
+	subtotal = 0.0;
+	ingredientTotals = Map();
+	// Booking_Lines is a standalone form (Booking lookup + Menu_Item + Servings_Per_Guest).
+	// A subform is not used because the current Creator plan allows subforms in demo mode only.
+	for each line in Booking_Lines[Booking == bookingId]
+	{
+		item = Menu_Items[ID == line.Menu_Item];
+		perGuest = ifnull(line.Servings_Per_Guest,1.0);
+		rawQty = guests * perGuest;
+		qtyWithBuffer = rawQty * (1 + bufferRate);
+		lineAmount = item.Price_Per_Serving * guests * perGuest;
+		subtotal = subtotal + lineAmount;
+		// Calculation detail per menu item
+		calcRow = insert into Booking_Calculations
+		[
+			Booking = bookingId
+			Menu_Item = item.ID
+			Guest_Count = guests
+			Quantity_Required = qtyWithBuffer
+			Unit_Price = item.Price_Per_Serving
+			Line_Amount = lineAmount
+		];
+		// Prep sheet line
+		prepRow = insert into Prep_Sheet_Items
+		[
+			Booking = bookingId
+			Menu_Item = item.ID
+			Quantity_To_Prep = qtyWithBuffer
+			Unit = item.Unit
+		];
+		// Aggregate ingredients from the recipe of this item
+		for each recipe in Recipes[Menu_Item == item.ID]
+		{
+			need = recipe.Quantity_Per_Serving * guests * perGuest * (1 + bufferRate);
+			key = recipe.Ingredient.toString();
+			current = ifnull(ingredientTotals.get(key),0.0);
+			ingredientTotals.put(key,current + need);
+		}
+	}
+	// Write shopping list rows, split by perishable / non-perishable
+	for each ingredientId in ingredientTotals.keys()
+	{
+		ingredient = Ingredients[ID == ingredientId.toLong()];
+		requiredQty = ingredientTotals.get(ingredientId);
+		// Round up to whole purchase units
+		purchaseQty = requiredQty.ceil();
+		if(ingredient.Purchase_Unit_Size != null && ingredient.Purchase_Unit_Size > 0)
+		{
+			purchaseQty = (requiredQty / ingredient.Purchase_Unit_Size).ceil() * ingredient.Purchase_Unit_Size;
+		}
+		row = insert into Shopping_List_Items
+		[
+			Booking = bookingId
+			Ingredient = ingredient.ID
+			Category = ingredient.Category
+			Required_Quantity = requiredQty
+			Purchase_Quantity = purchaseQty
+			Unit = ingredient.Unit
+		];
+	}
+	// Money
+	serviceFee = subtotal * serviceRate;
+	taxable = subtotal + serviceFee;
+	tax = taxable * taxRate;
+	total = taxable + tax;
+	deposit = total * depositRate;
+	balance = total - deposit;
+	booking.Subtotal = subtotal;
+	booking.Service_Fee = serviceFee;
+	booking.Tax = tax;
+	booking.Total_Amount = total;
+	booking.Deposit_Amount = deposit;
+	booking.Balance_Amount = balance;
+	return "OK booking=" + bookingId + " guests=" + guests + " total=" + total + " deposit=" + deposit + " balance=" + balance;
+}

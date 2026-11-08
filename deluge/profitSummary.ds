@@ -1,0 +1,47 @@
+// ============================================================
+// profitSummary.ds
+// Zoho Creator - Catering Operations Sample (self-built demo)
+//
+// Purpose:
+//   Revenue - ingredient cost - other expenses = gross profit
+//   and margin for one booking. Returns a summary map that a
+//   Page (HTML snippet / ZML) or a scheduled report can render.
+// ============================================================
+
+map profitSummary(int bookingId)
+{
+	result = Map();
+	booking = Bookings[ID == bookingId];
+	if(booking == null)
+	{
+		result.put("error","Booking not found: " + bookingId);
+		return result;
+	}
+	revenue = ifnull(booking.Total_Amount,0.0);
+	// Ingredient cost from the shopping list (purchase qty x unit cost)
+	ingredientCost = 0.0;
+	for each row in Shopping_List_Items[Booking == bookingId]
+	{
+		ingredient = Ingredients[ID == row.Ingredient];
+		ingredientCost = ingredientCost + ifnull(row.Purchase_Quantity,0.0) * ifnull(ingredient.Cost_Per_Unit,0.0);
+	}
+	// Other expenses (labor, transport, rentals...)
+	expenseTotal = 0.0;
+	for each exp in Expenses[Booking == bookingId]
+	{
+		expenseTotal = expenseTotal + ifnull(exp.Amount,0.0);
+	}
+	grossProfit = revenue - ingredientCost - expenseTotal;
+	margin = 0.0;
+	if(revenue > 0)
+	{
+		margin = grossProfit / revenue * 100;
+	}
+	result.put("booking",bookingId);
+	result.put("revenue",revenue);
+	result.put("ingredient_cost",ingredientCost);
+	result.put("other_expenses",expenseTotal);
+	result.put("gross_profit",grossProfit);
+	result.put("margin_percent",margin.round(1));
+	return result;
+}

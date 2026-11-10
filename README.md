@@ -57,7 +57,7 @@ rounding (chicken 8.25 kg → 10 kg, limes 27.5 → 40).
 
 Verified on the same 50-guest test booking: revenue (excl. tax) $1,430.00,
 ingredient purchase cost $142.00, expenses $0 — **gross profit $1,288.00,
-margin 90.1%**. All 14 Phase 2 tests (TC-K1–K9, TC-P1–P8) pass.
+margin 90.1%**. All 13 Phase 2 test cases pass (17 checks: TC-K1–K9, TC-P1–P8).
 
 ## Data model
 

@@ -37,6 +37,28 @@ subtotal $1,300.00, service fee $130.00, tax $114.40, **total $1,544.40**,
 deposit $772.20 — matching hand-computed values exactly, including purchase-unit
 rounding (chicken 8.25 kg → 10 kg, limes 27.5 → 40).
 
+## Phase 2 additions (built and verified)
+
+- 13 forms: the Phase 1 set plus `Packing_Rules`, `Packing_Items`, `Expenses`
+- Deluge function `buildPackingList(bookingId)`:
+  - generates the packing checklist from a rules table — four calculation
+    types: Fixed, Per Guest, Per Guest Block (e.g. one warming box per
+    25 guests), Per Menu Unit (scaled by the prep quantity)
+  - rules are evaluated in order and snapshot into the generated rows, so
+    renaming or deleting a rule later never rewrites an issued list
+  - regeneration is blocked once any item is checked off, so field progress
+    is never wiped by a recalculation
+- Deluge function `profitSummary(bookingId)`:
+  - per-booking profit estimate: revenue excluding tax − ingredient purchase
+    cost (purchase quantity × unit cost) − recorded expenses
+  - refreshes automatically when an expense is added or edited
+  - a missing ingredient cost fails the calculation instead of silently
+    counting as zero, and a failed run never overwrites the last good numbers
+
+Verified on the same 50-guest test booking: revenue (excl. tax) $1,430.00,
+ingredient purchase cost $142.00, expenses $0 — **gross profit $1,288.00,
+margin 90.1%**. All 14 Phase 2 tests (TC-K1–K9, TC-P1–P8) pass.
+
 ## Data model
 
 See [docs/data-model.md](docs/data-model.md). The core idea: a **recipe table**
@@ -54,19 +76,24 @@ prep quantities, shopping quantities and costs are all derived.
    runtime ("invalid expressions delete statement is terminated") once more than
    one row matches. The function uses bulk deletes by criteria instead.
 
-## Designed, not yet built (Phase 2)
+## Designed, not yet built
 
-- Packing checklist generation (`Packing_Items`, quantity rules per item/guest)
-- Invoices (deposit / final) and per-event profit summary —
-  `deluge/profitSummary.ds` is a draft and is **not installed or tested yet**
-  (it expects an `Expenses` form that Phase 2 adds)
+- Invoices (deposit / final)
 - Integrations with Zoho CRM / Sign / Books and Square deposits
   (designed in the data model, not implemented in this sample)
+
+3. **Do not name a loop variable after the collection you insert into.**
+   Reusing the same name fails only when rows already exist — the first
+   generation passes, regeneration throws. Test the second run, not the first.
+4. **A Creator Checkbox field is not a boolean.** It returns the list of
+   selected options, so criteria and conditions have to be written against
+   a list.
 
 ## Files
 
 - `deluge/calculateBooking.ds` — the calculation engine (installed and verified)
-- `deluge/profitSummary.ds` — Phase 2 draft, not installed
+- `deluge/buildPackingList.ds` — packing checklist generation (Phase 2, installed and verified)
+- `deluge/profitSummary.ds` — per-booking profit estimate (Phase 2, installed and verified)
 - `docs/data-model.md` — forms, fields and calculation rules
 
 Built by Kotaro Izumida — Zoho CRM / Creator consultant

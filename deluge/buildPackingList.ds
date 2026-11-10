@@ -1,0 +1,210 @@
+// ============================================================
+// buildPackingList.ds  -- INSTALLED 2026-11-09, TESTED 2026-11-10
+// (this file mirrors the live function, incl. the fixes below)
+// Zoho Creator - Catering Operations Sample, Phase 2
+// Spec: phase2/仕様書-v0.2.md §3.1 (approved 2026-11-09)
+// Install-time adjustments vs the original draft:
+// - argument type int (Creator UI has no bigint; matches the
+//   existing calculateBooking(int bookingId))
+// - Creator Checkbox fields are STRINGLIST choice groups, so
+//   checks use .contains("Choice 1") instead of == true
+// - TC-K8 defect fix (2026-11-10): the insert target variable
+//   was renamed row -> newRow; reusing the for-each variable
+//   name "row" broke every run once packing rows existed
+// - a harmless null guard on row.Checked was kept from diagnosis
+//
+// Purpose:
+//   Generate Packing_Items for one booking from Packing_Rules.
+//   Safety properties required by the spec:
+//   - Never delete the existing list before every new row has
+//     been built and validated in memory.
+//   - If any existing row is Checked, refuse to regenerate
+//     (Packing Reset procedure is a human decision).
+//   - Manual Notes survive regeneration when Item_Name and
+//     Source_Rule still match.
+// Requires forms: Packing_Rules, Packing_Items (Phase 2),
+// and Bookings fields Status, Guest_Count, Service_Type,
+// Calc_Status, Packing_Generated_At.
+// ============================================================
+
+string buildPackingList(int bookingId)
+{
+	booking = Bookings[ID == bookingId];
+	if(booking == null)
+	{
+		return "Booking not found: " + bookingId;
+	}
+	// Status matrix: packing is generated only for Quoted / Confirmed.
+	if(booking.Status != "Quoted" && booking.Status != "Confirmed")
+	{
+		return "Skipped: status is " + booking.Status;
+	}
+	// Calculation-generation guard (needs the calculateBooking patch).
+	if(booking.Calc_Status != null && booking.Calc_Status != "Complete")
+	{
+		return "Skipped: booking calculation is not complete (Calc_Status=" + booking.Calc_Status + ")";
+	}
+	guests = booking.Guest_Count;
+	if(guests == null || guests <= 0)
+	{
+		return "Guest count is not set for booking " + bookingId;
+	}
+	// Booking lines must exist.
+	lineCount = 0;
+	menuInBooking = Map();
+	for each line in Booking_Lines[Booking == bookingId]
+	{
+		lineCount = lineCount + 1;
+		if(line.Menu_Item != null)
+		{
+			menuInBooking.put(line.Menu_Item.toString(),true);
+		}
+	}
+	if(lineCount == 0)
+	{
+		return "No booking lines for booking " + bookingId;
+	}
+	// Check protection: a single checked row blocks regeneration.
+	checkedCount = 0;
+	notesByKey = Map();
+	for each row in Packing_Items[Booking == bookingId]
+	{
+		if(row.Checked != null && row.Checked.contains("Choice 1"))
+		{
+			checkedCount = checkedCount + 1;
+		}
+		if(row.Notes != null && row.Notes != "")
+		{
+			key = ifnull(row.Item_Name,"") + "|" + ifnull(row.Source_Rule,0).toString();
+			notesByKey.put(key,row.Notes);
+		}
+	}
+	if(checkedCount > 0)
+	{
+		return "Packing list already in use (checked items exist). Use the Packing Reset procedure before regenerating.";
+	}
+	// Prep totals per menu item (a menu can appear on several lines,
+	// and calculateBooking writes one prep row per line: sum them).
+	prepTotals = Map();
+	for each prep in Prep_Sheet_Items[Booking == bookingId]
+	{
+		key = prep.Menu_Item.toString();
+		current = ifnull(prepTotals.get(key),0.0);
+		prepTotals.put(key,current + ifnull(prep.Quantity_To_Prep,0.0));
+	}
+	// Build every new row in memory BEFORE touching stored rows.
+	newRows = List();
+	warnings = List();
+	for each rule in Packing_Rules[Active.contains("Choice 1")]
+	{
+		baseQty = rule.Base_Quantity;
+		if(baseQty == null || baseQty <= 0)
+		{
+			warnings.add("rule skipped (invalid Base_Quantity): " + rule.Rule_Name);
+			continue;
+		}
+		applies = false;
+		if(rule.Applies_To == "All Bookings")
+		{
+			applies = true;
+		}
+		else if(rule.Applies_To == "Service Type")
+		{
+			applies = rule.Service_Type == booking.Service_Type;
+		}
+		else if(rule.Applies_To == "Menu Item")
+		{
+			if(rule.Menu_Item == null)
+			{
+				warnings.add("rule skipped (no Menu_Item set): " + rule.Rule_Name);
+				continue;
+			}
+			applies = menuInBooking.containKey(rule.Menu_Item.toString());
+		}
+		if(!applies)
+		{
+			continue;
+		}
+		qty = null;
+		if(rule.Calculation_Type == "Fixed")
+		{
+			qty = baseQty;
+		}
+		else if(rule.Calculation_Type == "Per Guest")
+		{
+			qty = baseQty * guests;
+		}
+		else if(rule.Calculation_Type == "Per Guest Block")
+		{
+			if(rule.Block_Size == null || rule.Block_Size <= 0)
+			{
+				warnings.add("rule skipped (invalid Block_Size): " + rule.Rule_Name);
+				continue;
+			}
+			qty = (guests / rule.Block_Size).ceil() * baseQty;
+		}
+		else if(rule.Calculation_Type == "Per Menu Unit")
+		{
+			if(rule.Applies_To != "Menu Item")
+			{
+				warnings.add("rule skipped (Per Menu Unit requires Applies_To = Menu Item): " + rule.Rule_Name);
+				continue;
+			}
+			prepTotal = prepTotals.get(rule.Menu_Item.toString());
+			if(prepTotal == null)
+			{
+				warnings.add("INCOMPLETE (no prep row for menu item): " + rule.Rule_Name);
+				continue;
+			}
+			qty = baseQty * prepTotal;
+		}
+		if(qty == null)
+		{
+			warnings.add("rule skipped (unknown Calculation_Type): " + rule.Rule_Name);
+			continue;
+		}
+		// Packing items are physical: round the final quantity up.
+		qty = qty.ceil();
+		rowMap = Map();
+		rowMap.put("Item_Name",rule.Rule_Name);
+		rowMap.put("Category",rule.Category);
+		rowMap.put("Quantity_Required",qty);
+		rowMap.put("Unit",rule.Unit);
+		rowMap.put("Source_Rule",rule.ID);
+		rowMap.put("Sort_Order",rule.Sort_Order);
+		rowMap.put("Rule_Notes",rule.Notes);
+		noteKey = ifnull(rule.Rule_Name,"") + "|" + rule.ID.toString();
+		if(notesByKey.containKey(noteKey))
+		{
+			rowMap.put("Notes",notesByKey.get(noteKey));
+		}
+		newRows.add(rowMap);
+	}
+	// All rows built and validated: now replace the stored list.
+	// Bulk delete by criteria (never delete inside a for-each).
+	delete from Packing_Items[Booking == bookingId];
+	inserted = 0;
+	for each rowMap in newRows
+	{
+		newRow = insert into Packing_Items
+		[
+			Booking = bookingId
+			Item_Name = rowMap.get("Item_Name")
+			Category = rowMap.get("Category")
+			Quantity_Required = rowMap.get("Quantity_Required")
+			Unit = rowMap.get("Unit")
+			Source_Rule = rowMap.get("Source_Rule")
+			Sort_Order = rowMap.get("Sort_Order")
+			Rule_Notes = rowMap.get("Rule_Notes")
+			Notes = rowMap.get("Notes")
+		];
+		inserted = inserted + 1;
+	}
+	booking.Packing_Generated_At = zoho.currenttime;
+	result = "OK booking=" + bookingId + " packing_items=" + inserted;
+	if(warnings.size() > 0)
+	{
+		result = result + " warnings=" + warnings.toString();
+	}
+	return result;
+}

@@ -1,47 +1,117 @@
 // ============================================================
-// profitSummary.ds
-// Zoho Creator - Catering Operations Sample (self-built demo)
+// profitSummary.ds  -- INSTALLED 2026-11-09, TESTED 2026-11-10
+// (this file mirrors the live function; the only install-time
+// adjustment vs the draft was the argument type: int, because
+// the Creator function UI has no bigint type)
+// Zoho Creator - Catering Operations Sample, Phase 2
+// Spec: phase2/仕様書-v0.2.md §3.2 (approved 2026-11-09)
+// Replaces the Phase 1-era draft of the same name (map/int).
 //
-// Purpose:
-//   Revenue - ingredient cost - other expenses = gross profit
-//   and margin for one booking. Returns a summary map that a
-//   Page (HTML snippet / ZML) or a scheduled report can render.
+// Definition (sample metric, labelled "Estimated Profit"):
+//   Revenue_Excl_Tax = Subtotal + Service_Fee   (tax excluded:
+//   tax is collected for remittance, not revenue)
+//   Ingredient_Purchase_Cost = SUM(Purchase_Quantity x
+//   Ingredients.Cost_Per_Unit), Cost_Per_Unit being the cost
+//   per Ingredients.Unit (per kg / per piece), NOT per pack.
+//   Gross_Profit = Revenue - Ingredient Cost - Expenses
+// E1 decision: this is a LIVE estimate. Re-running after a
+// master cost change restates the profit of any booking.
+// Failure policy: on any missing/invalid input, do NOT
+// overwrite the money fields; write Profit_Status = Failed
+// with the reason and return it.
 // ============================================================
 
-map profitSummary(int bookingId)
+string profitSummary(int bookingId)
 {
-	result = Map();
 	booking = Bookings[ID == bookingId];
 	if(booking == null)
 	{
-		result.put("error","Booking not found: " + bookingId);
-		return result;
+		return "Booking not found: " + bookingId;
 	}
-	revenue = ifnull(booking.Total_Amount,0.0);
-	// Ingredient cost from the shopping list (purchase qty x unit cost)
+	// Prerequisite: a completed, current booking calculation.
+	if(booking.Subtotal == null || (booking.Calc_Status != null && booking.Calc_Status != "Complete"))
+	{
+		booking.Profit_Status = "Failed: booking calculation is not complete";
+		return "Run calculateBooking first (booking=" + bookingId + ")";
+	}
+	// Recipe completeness: a booked menu item with no recipe rows
+	// would make an empty shopping list look like zero cost.
+	for each line in Booking_Lines[Booking == bookingId]
+	{
+		recipeCount = 0;
+		for each recipe in Recipes[Menu_Item == line.Menu_Item]
+		{
+			recipeCount = recipeCount + 1;
+		}
+		if(recipeCount == 0)
+		{
+			booking.Profit_Status = "Failed: INCOMPLETE - a booked menu item has no recipes";
+			return "INCOMPLETE: booked menu item has no recipes (booking=" + bookingId + ")";
+		}
+	}
+	revenue = booking.Subtotal + ifnull(booking.Service_Fee,0.0);
+	// Ingredient purchase cost from the shopping list.
 	ingredientCost = 0.0;
 	for each row in Shopping_List_Items[Booking == bookingId]
 	{
 		ingredient = Ingredients[ID == row.Ingredient];
-		ingredientCost = ingredientCost + ifnull(row.Purchase_Quantity,0.0) * ifnull(ingredient.Cost_Per_Unit,0.0);
+		if(ingredient == null)
+		{
+			booking.Profit_Status = "Failed: shopping list references a missing ingredient";
+			return "Missing ingredient record (booking=" + bookingId + ")";
+		}
+		if(ingredient.Cost_Per_Unit == null)
+		{
+			booking.Profit_Status = "Failed: Cost_Per_Unit is not set for " + ingredient.Ingredient_Name;
+			return "Cost_Per_Unit missing for ingredient: " + ingredient.Ingredient_Name;
+		}
+		if(row.Purchase_Quantity == null)
+		{
+			booking.Profit_Status = "Failed: Purchase_Quantity missing for " + ingredient.Ingredient_Name;
+			return "Purchase_Quantity missing for ingredient: " + ingredient.Ingredient_Name;
+		}
+		ingredientCost = ingredientCost + row.Purchase_Quantity * ingredient.Cost_Per_Unit;
 	}
-	// Other expenses (labor, transport, rentals...)
+	// Other expenses (costs NOT already in the shopping list).
 	expenseTotal = 0.0;
 	for each exp in Expenses[Booking == bookingId]
 	{
-		expenseTotal = expenseTotal + ifnull(exp.Amount,0.0);
+		if(exp.Amount == null || exp.Amount < 0)
+		{
+			booking.Profit_Status = "Failed: an expense has an invalid Amount";
+			return "Invalid expense amount (booking=" + bookingId + ")";
+		}
+		expenseTotal = expenseTotal + exp.Amount;
 	}
+	// Rounding (fixed order, spec §3.2): round each component to
+	// 2 decimals, then derive profit from the ROUNDED components
+	// so displayed numbers always reconcile.
+	revenue = revenue.round(2);
+	ingredientCost = ingredientCost.round(2);
+	expenseTotal = expenseTotal.round(2);
 	grossProfit = revenue - ingredientCost - expenseTotal;
-	margin = 0.0;
+	booking.Revenue_Excl_Tax = revenue;
+	booking.Ingredient_Purchase_Cost = ingredientCost;
+	booking.Other_Expenses_Total = expenseTotal;
+	booking.Gross_Profit = grossProfit;
+	statusNote = "Current";
+	if(booking.Status == "Cancelled")
+	{
+		statusNote = "Current (reference only: cancelled)";
+	}
 	if(revenue > 0)
 	{
-		margin = grossProfit / revenue * 100;
+		margin = (grossProfit / revenue * 100).round(1);
+		booking.Profit_Margin_Percent = margin;
 	}
-	result.put("booking",bookingId);
-	result.put("revenue",revenue);
-	result.put("ingredient_cost",ingredientCost);
-	result.put("other_expenses",expenseTotal);
-	result.put("gross_profit",grossProfit);
-	result.put("margin_percent",margin.round(1));
-	return result;
+	else
+	{
+		// No meaningful margin at zero revenue: leave empty, say why.
+		booking.Profit_Margin_Percent = null;
+		margin = null;
+		statusNote = statusNote + " / margin unavailable: revenue is 0";
+	}
+	booking.Profit_Status = statusNote;
+	booking.Profit_Calculated_At = zoho.currenttime;
+	return "OK booking=" + bookingId + " revenue=" + revenue + " ingredient_cost=" + ingredientCost + " expenses=" + expenseTotal + " gross_profit=" + grossProfit + " margin=" + margin;
 }
